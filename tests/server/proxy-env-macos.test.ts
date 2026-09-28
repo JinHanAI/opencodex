@@ -179,6 +179,56 @@ describe('macOS proxy: "auto" (#5853)', () => {
     expect(snapshot()).toEqual(before);
   });
 
+  test("a SOCKS-only system proxy reports its own kind instead of disabled", () => {
+    expect(readMacOSSystemProxy(() => scutil("SOCKSEnable : 1\nSOCKSProxy : socks.example\nSOCKSPort : 1080")))
+      .toEqual({ kind: "socks-only" });
+  });
+
+  test("refusal counts unrepresentable exceptions by shape", () => {
+    expect(readMacOSSystemProxy(() => scutil(`${both}\nExceptionsList : <array> {\n0 : 10.0.0.0/8\n1 : www.example\n2 : *.*.local\n3 : *.local\n}`)))
+      .toEqual({
+        kind: "unsafe-exceptions",
+        unrepresentable: { cidr: 1, hostname: 1, wildcard: 1, other: 0 },
+      });
+  });
+
+  test("refusal diagnostics name shapes and counts, never the entries", () => {
+    process.env.NO_PROXY = "upper.example";
+    process.env.no_proxy = "lower.example";
+    const before = snapshot();
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args) => { lines.push(args.join(" ")); };
+    try {
+      applyProxyEnvWith(config("auto"), {
+        platform: "darwin",
+        macOSReader: () => scutil(`${both}\nExceptionsList : <array> {\n0 : 10.0.0.0/8\n1 : localhost\n}`),
+      });
+    } finally { console.log = original; }
+    expect(snapshot()).toEqual(before);
+    expect(lines.join(" ")).toContain("discovery refused");
+    expect(lines.join(" ")).toContain("1 CIDR");
+    expect(lines.join(" ")).toContain("1 bare-hostname");
+    expect(lines.join(" ")).not.toContain("10.0.0.0/8");
+    expect(lines.join(" ")).not.toContain("localhost");
+  });
+
+  test("SOCKS-only egress is reported as SOCKS-only, not as disabled", () => {
+    const before = snapshot();
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args) => { lines.push(args.join(" ")); };
+    try {
+      applyProxyEnvWith(config("auto"), {
+        platform: "darwin",
+        macOSReader: () => scutil("SOCKSEnable : 1\nSOCKSProxy : socks.example\nSOCKSPort : 1080"),
+      });
+    } finally { console.log = original; }
+    expect(snapshot()).toEqual(before);
+    expect(lines.join(" ")).toContain("SOCKS-only, which HTTP_PROXY cannot express");
+    expect(lines.join(" ")).not.toContain("is disabled");
+  });
+
   test("a failed scutil read leaves egress unchanged", () => {
     const before = snapshot();
     applyProxyEnvWith(config("auto"), { platform: "darwin", macOSReader: () => { throw new Error("secret"); } });

@@ -2,9 +2,12 @@ import { execFileSync } from "node:child_process";
 import { isIP } from "node:net";
 
 export type MacOSProxyReader = () => string | null;
+export type UnrepresentableCounts = { cidr: number; hostname: number; wildcard: number; other: number };
 export type MacOSSystemProxyResult =
   | { kind: "proxy"; httpUrl?: string; httpsUrl?: string; exceptions: string[]; droppedLinkLocal: boolean }
-  | { kind: "disabled" | "unreadable" | "unsafe-exceptions" };
+  | { kind: "unsafe-exceptions"; unrepresentable?: UnrepresentableCounts; setting?: string }
+  | { kind: "socks-only" }
+  | { kind: "disabled" | "unreadable" };
 
 function readScutilProxy(): string {
   return execFileSync("/usr/sbin/scutil", ["--proxy"], {
@@ -52,6 +55,23 @@ function translateException(value: string): string | null | undefined {
   return isIP(bare) === 6 ? new URL(`http://[${bare}]`).hostname : undefined;
 }
 
+// Refusals must not echo the offending entries (a system bypass list can name internal
+// hosts), so discovery reports only how many entries fall into each unrepresentable shape:
+// CIDR ranges, bare hostnames Bun would widen to subdomains, malformed wildcard shapes,
+// and anything else.
+function unrepresentableCategory(value: string): "cidr" | "hostname" | "wildcard" | "other" {
+  if (value.includes("/")) return "cidr";
+  if (value.includes("*")) return "wildcard";
+  if (isIP(value) || (value.startsWith("[") && value.endsWith("]"))) return "other";
+  return "hostname";
+}
+
+function countUnrepresentable(values: string[]): UnrepresentableCounts {
+  const counts: UnrepresentableCounts = { cidr: 0, hostname: 0, wildcard: 0, other: 0 };
+  for (const value of values) counts[unrepresentableCategory(value)]++;
+  return counts;
+}
+
 /** Read only the global dictionary; scoped service dictionaries do not apply globally. */
 export function readMacOSSystemProxy(reader: MacOSProxyReader = readScutilProxy): MacOSSystemProxyResult {
   try {
@@ -91,23 +111,31 @@ export function readMacOSSystemProxy(reader: MacOSProxyReader = readScutilProxy)
     }
     if (depth !== 0) return { kind: "unreadable" };
     if (values.get("ExcludeSimpleHostnames") === "1" || values.get("ProxyAutoConfigEnable") === "1"
-      || values.get("ProxyAutoDiscoveryEnable") === "1") return { kind: "unsafe-exceptions" };
+      || values.get("ProxyAutoDiscoveryEnable") === "1") {
+      const setting = values.get("ExcludeSimpleHostnames") === "1" ? "ExcludeSimpleHostnames"
+        : values.get("ProxyAutoConfigEnable") === "1" ? "ProxyAutoConfigEnable"
+        : "ProxyAutoDiscoveryEnable";
+      return { kind: "unsafe-exceptions", setting };
+    }
     for (const key of ["HTTPEnable", "HTTPSEnable", "ExcludeSimpleHostnames", "ProxyAutoConfigEnable", "ProxyAutoDiscoveryEnable"]) {
       const value = values.get(key);
       if (value !== undefined && value !== "0" && value !== "1") return { kind: "unreadable" };
     }
     const translated = exceptions.map(translateException);
-    if (translated.some(value => value === undefined)) return { kind: "unsafe-exceptions" };
+    if (translated.some(value => value === undefined)) {
+      return { kind: "unsafe-exceptions", unrepresentable: countUnrepresentable(exceptions.filter((_, index) => translated[index] === undefined)) };
+    }
     const httpEnabled = values.get("HTTPEnable") === "1";
     const httpsEnabled = values.get("HTTPSEnable") === "1";
     const httpUrl = httpEnabled ? proxyUrl(values.get("HTTPProxy"), values.get("HTTPPort")) : undefined;
     const httpsUrl = httpsEnabled ? proxyUrl(values.get("HTTPSProxy"), values.get("HTTPSPort")) : undefined;
     if ((httpEnabled && !httpUrl) || (httpsEnabled && !httpsUrl)) return { kind: "unreadable" };
-    return httpUrl || httpsUrl
-      ? { kind: "proxy", httpUrl, httpsUrl,
-          exceptions: translated.filter((value): value is string => typeof value === "string"),
-          droppedLinkLocal: translated.includes(null) }
-      : { kind: "disabled" };
+    if (httpUrl || httpsUrl) {
+      return { kind: "proxy", httpUrl, httpsUrl,
+        exceptions: translated.filter((value): value is string => typeof value === "string"),
+        droppedLinkLocal: translated.includes(null) };
+    }
+    return values.get("SOCKSEnable") === "1" ? { kind: "socks-only" } : { kind: "disabled" };
   } catch {
     return { kind: "unreadable" };
   }
