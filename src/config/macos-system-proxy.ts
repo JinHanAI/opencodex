@@ -38,6 +38,9 @@ function proxyUrl(host: string | undefined, port: string | undefined): string | 
  * CIDRs, so they are dropped with a diagnostic instead of blocking discovery.
  * Returns the translated entry, null when one of those exact ranges was dropped,
  * or undefined when the shape cannot be represented and refuses discovery.
+ * Non-canonical IPv4 literals (e.g. leading-zero octets) return undefined; the
+ * refusal counter then reports them in the "other" shape bucket (see
+ * unrepresentableCategory) so shape counts stay interpretable.
  */
 function translateException(value: string): string | null | undefined {
   if (value === "*") return value;
@@ -65,12 +68,14 @@ function translateException(value: string): string | null | undefined {
  * the offending entries (a system bypass list can name internal hosts), so discovery
  * reports only how many entries fall into each shape: CIDR ranges, syntactically
  * valid bare hostnames Bun would widen to subdomains, malformed wildcard shapes,
- * and anything else.
+ * and anything else. Non-canonical IPv4 literals (digit-dotted strings that fail
+ * canonicalization) are IP-shaped rather than hostnames and count as "other".
  */
 function unrepresentableCategory(value: string): "cidr" | "hostname" | "wildcard" | "other" {
   if (value.includes("/")) return "cidr";
   if (value.includes("*")) return "wildcard";
   if (isIP(value) || (value.startsWith("[") && value.endsWith("]"))) return "other";
+  if (/^\d+(\.\d+)+$/.test(value)) return "other";
   return /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i.test(value) ? "hostname" : "other";
 }
 

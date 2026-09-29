@@ -238,6 +238,36 @@ describe('macOS proxy: "auto" (#5853)', () => {
     expect(lines.join(" ")).not.toContain("cannot be safely translated");
   });
 
+  test.each(["ProxyAutoConfigEnable", "ProxyAutoDiscoveryEnable"])(
+    "toggle priority chain names %s in the refusal log", toggle => {
+      const lines: string[] = [];
+      const original = console.log;
+      console.log = (...args) => { lines.push(args.join(" ")); };
+      try {
+        applyProxyEnvWith(config("auto"), {
+          platform: "darwin",
+          macOSReader: () => scutil(`${both}\n${toggle} : 1`),
+        });
+      } finally { console.log = original; }
+      expect(lines.join(" ")).toContain(`${toggle} is enabled; discovery refused`);
+      expect(lines.join(" ")).not.toContain("cannot be safely translated");
+    },
+  );
+
+  test("the toggle priority chain prefers the first enabled toggle when several are on", () => {
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args) => { lines.push(args.join(" ")); };
+    try {
+      applyProxyEnvWith(config("auto"), {
+        platform: "darwin",
+        macOSReader: () => scutil(`${both}\nProxyAutoDiscoveryEnable : 1\nProxyAutoConfigEnable : 1`),
+      });
+    } finally { console.log = original; }
+    expect(lines.join(" ")).toContain("ProxyAutoConfigEnable is enabled; discovery refused");
+    expect(lines.join(" ")).not.toContain("ProxyAutoDiscoveryEnable is enabled");
+  });
+
   test("combined refusal names the toggle and the exception shapes without entry values", () => {
     const before = snapshot();
     const lines: string[] = [];
