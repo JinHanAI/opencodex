@@ -184,6 +184,21 @@ describe('macOS proxy: "auto" (#5853)', () => {
       .toEqual({ kind: "socks-only" });
   });
 
+  test("transport precedence: SOCKS-only wins over untranslatable exceptions", () => {
+    expect(readMacOSSystemProxy(() => scutil("SOCKSEnable : 1\nSOCKSProxy : socks.example\nSOCKSPort : 1080\nExceptionsList : <array> {\n0 : 10.0.0.0/8\n1 : localhost\n}")))
+      .toEqual({ kind: "socks-only" });
+  });
+
+  test("transport precedence: SOCKS-only wins over unsafe toggles", () => {
+    expect(readMacOSSystemProxy(() => scutil("SOCKSEnable : 1\nSOCKSProxy : socks.example\nSOCKSPort : 1080\nExcludeSimpleHostnames : 1")))
+      .toEqual({ kind: "socks-only" });
+  });
+
+  test("transport precedence: no HTTP/S and no SOCKS stays disabled even with untranslatable exceptions", () => {
+    expect(readMacOSSystemProxy(() => scutil("ExceptionsList : <array> {\n0 : 10.0.0.0/8\n}")))
+      .toEqual({ kind: "disabled" });
+  });
+
   test("refusal counts unrepresentable exceptions by shape", () => {
     expect(readMacOSSystemProxy(() => scutil(`${both}\nExceptionsList : <array> {\n0 : 10.0.0.0/8\n1 : www.example\n2 : *.*.local\n3 : *.local\n}`)))
       .toEqual({
@@ -192,9 +207,38 @@ describe('macOS proxy: "auto" (#5853)', () => {
       });
   });
 
-  test("refusal diagnostics name shapes and counts, never the entries", () => {
-    process.env.NO_PROXY = "upper.example";
-    process.env.no_proxy = "lower.example";
+  test("malformed text lands in other, not bare-hostname", () => {
+    expect(readMacOSSystemProxy(() => scutil(`${both}\nExceptionsList : <array> {\n0 : bad entry\n1 : www.example\n}`)))
+      .toEqual({
+        kind: "unsafe-exceptions",
+        unrepresentable: { cidr: 0, hostname: 1, wildcard: 0, other: 1 },
+      });
+  });
+
+  test("refusal combines the blocking toggle with exception shape counts", () => {
+    expect(readMacOSSystemProxy(() => scutil(`${both}\nExcludeSimpleHostnames : 1\nExceptionsList : <array> {\n0 : 10.0.0.0/8\n1 : *.local\n}`)))
+      .toEqual({
+        kind: "unsafe-exceptions",
+        setting: "ExcludeSimpleHostnames",
+        unrepresentable: { cidr: 1, hostname: 0, wildcard: 0, other: 0 },
+      });
+  });
+
+  test("toggle refusals use setting-specific wording, not the exceptions framing", () => {
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args) => { lines.push(args.join(" ")); };
+    try {
+      applyProxyEnvWith(config("auto"), {
+        platform: "darwin",
+        macOSReader: () => scutil(`${both}\nExcludeSimpleHostnames : 1`),
+      });
+    } finally { console.log = original; }
+    expect(lines.join(" ")).toContain("ExcludeSimpleHostnames is enabled; discovery refused");
+    expect(lines.join(" ")).not.toContain("cannot be safely translated");
+  });
+
+  test("combined refusal names the toggle and the exception shapes without entry values", () => {
     const before = snapshot();
     const lines: string[] = [];
     const original = console.log;
@@ -202,15 +246,14 @@ describe('macOS proxy: "auto" (#5853)', () => {
     try {
       applyProxyEnvWith(config("auto"), {
         platform: "darwin",
-        macOSReader: () => scutil(`${both}\nExceptionsList : <array> {\n0 : 10.0.0.0/8\n1 : localhost\n}`),
+        macOSReader: () => scutil(`${both}\nExcludeSimpleHostnames : 1\nExceptionsList : <array> {\n0 : 10.0.0.0/8\n1 : *.local\n}`),
       });
     } finally { console.log = original; }
     expect(snapshot()).toEqual(before);
-    expect(lines.join(" ")).toContain("discovery refused");
+    expect(lines.join(" ")).toContain("ExcludeSimpleHostnames is enabled");
     expect(lines.join(" ")).toContain("1 CIDR");
-    expect(lines.join(" ")).toContain("1 bare-hostname");
+    expect(lines.join(" ")).toContain("discovery refused");
     expect(lines.join(" ")).not.toContain("10.0.0.0/8");
-    expect(lines.join(" ")).not.toContain("localhost");
   });
 
   test("SOCKS-only egress is reported as SOCKS-only, not as disabled", () => {
