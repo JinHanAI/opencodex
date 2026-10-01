@@ -140,6 +140,13 @@ export function readMacOSSystemProxy(reader: MacOSProxyReader = readScutilProxy)
     // can change the outcome — SOCKS-only is the primary blocker and is reported ahead
     // of exception shapes, which would otherwise mask it (review round 1, P2).
     if (!(httpUrl || httpsUrl)) {
+      // PAC and WPAD can route traffic without a static HTTP(S) proxy. Saying "disabled",
+      // or "SOCKS-only, using direct egress", would misdescribe that setup, so the
+      // automatic-configuration toggle is reported first.
+      const autoSetting = values.get("ProxyAutoConfigEnable") === "1" ? "ProxyAutoConfigEnable"
+        : values.get("ProxyAutoDiscoveryEnable") === "1" ? "ProxyAutoDiscoveryEnable"
+        : undefined;
+      if (autoSetting) return { kind: "unsafe-exceptions", setting: autoSetting };
       return values.get("SOCKSEnable") === "1" ? { kind: "socks-only" } : { kind: "disabled" };
     }
     // With a usable HTTP(S) transport, toggles and untranslatable entries refuse

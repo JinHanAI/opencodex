@@ -199,6 +199,24 @@ describe('macOS proxy: "auto" (#5853)', () => {
       .toEqual({ kind: "disabled" });
   });
 
+  test("PAC without an HTTP(S) proxy is reported as PAC, not as disabled", () => {
+    expect(readMacOSSystemProxy(() => scutil("ProxyAutoConfigEnable : 1\nProxyAutoConfigURLString : http://pac.example/proxy.pac")))
+      .toEqual({ kind: "unsafe-exceptions", setting: "ProxyAutoConfigEnable" });
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args) => { lines.push(args.join(" ")); };
+    try {
+      applyProxyEnvWith(config("auto"), { platform: "darwin", macOSReader: () => scutil("ProxyAutoConfigEnable : 1") });
+    } finally { console.log = original; }
+    expect(lines.join(" ")).toContain("ProxyAutoConfigEnable is enabled; discovery refused");
+    expect(lines.join(" ")).not.toContain("disabled");
+  });
+
+  test("WPAD alongside SOCKS is reported as WPAD, not as SOCKS-only direct egress", () => {
+    expect(readMacOSSystemProxy(() => scutil("SOCKSEnable : 1\nSOCKSProxy : socks.example\nSOCKSPort : 1080\nProxyAutoDiscoveryEnable : 1")))
+      .toEqual({ kind: "unsafe-exceptions", setting: "ProxyAutoDiscoveryEnable" });
+  });
+
   test("refusal counts unrepresentable exceptions by shape", () => {
     expect(readMacOSSystemProxy(() => scutil(`${both}\nExceptionsList : <array> {\n0 : 10.0.0.0/8\n1 : www.example\n2 : *.*.local\n3 : *.local\n}`)))
       .toEqual({
