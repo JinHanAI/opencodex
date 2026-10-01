@@ -215,6 +215,16 @@ describe('macOS proxy: "auto" (#5853)', () => {
       });
   });
 
+  test.each(["foo..bar", ".example", "example.", "-example"])(
+    "malformed hostname structures land in other, not bare-hostname: %s", entry => {
+      expect(readMacOSSystemProxy(() => scutil(`${both}\nExceptionsList : <array> {\n0 : ${entry}\n1 : www.example\n}`)))
+        .toEqual({
+          kind: "unsafe-exceptions",
+          unrepresentable: { cidr: 0, hostname: 1, wildcard: 0, other: 1 },
+        });
+    },
+  );
+
   test("refusal combines the blocking toggle with exception shape counts", () => {
     expect(readMacOSSystemProxy(() => scutil(`${both}\nExcludeSimpleHostnames : 1\nExceptionsList : <array> {\n0 : 10.0.0.0/8\n1 : *.local\n}`)))
       .toEqual({

@@ -67,7 +67,8 @@ function translateException(value: string): string | null | undefined {
  * Classifies an unrepresentable entry for refusal diagnostics. Refusals must not echo
  * the offending entries (a system bypass list can name internal hosts), so discovery
  * reports only how many entries fall into each shape: CIDR ranges, syntactically
- * valid bare hostnames Bun would widen to subdomains, malformed wildcard shapes,
+ * valid bare hostnames Bun would widen to subdomains (validated per DNS label, so
+ * malformed structures like "foo..bar" do not count), malformed wildcard shapes,
  * and anything else. Non-canonical IPv4 literals (digit-dotted strings that fail
  * canonicalization) are IP-shaped rather than hostnames and count as "other".
  */
@@ -76,7 +77,9 @@ function unrepresentableCategory(value: string): "cidr" | "hostname" | "wildcard
   if (value.includes("*")) return "wildcard";
   if (isIP(value) || (value.startsWith("[") && value.endsWith("]"))) return "other";
   if (/^\d+(\.\d+)+$/.test(value)) return "other";
-  return /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i.test(value) ? "hostname" : "other";
+  const validLabels = value.split(".").every(label => label.length > 0 && label.length <= 63
+    && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label));
+  return validLabels ? "hostname" : "other";
 }
 
 /** Counts unrepresentable entries by shape for the refusal diagnostic. */
